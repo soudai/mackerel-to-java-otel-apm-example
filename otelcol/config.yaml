@@ -1,0 +1,41 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+  batch:
+    # Mackerel側のリクエストサイズ上限対策として、公式例に合わせる
+    send_batch_size: 5000
+    send_batch_max_size: 5000
+
+exporters:
+  # MackerelへOTLP/HTTPで送信
+  otlphttp/mackerel:
+    endpoint: "https://otlp-vaxila.mackerelio.com"
+    headers:
+      Accept: "*/*"
+      Mackerel-Api-Key: ${env:MACKEREL_APIKEY}
+
+  # ついでにcollectorログにも出す（デバッグ用）
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug, otlphttp/mackerel]

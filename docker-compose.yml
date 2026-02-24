@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d appdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.146.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      MACKEREL_APIKEY: ${MACKEREL_APIKEY}
+    volumes:
+      - ./otelcol/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP/gRPC
+      - "4318:4318"   # OTLP/HTTP
+      - "13133:13133" # health_check
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  manual-app:
+    build: ./manual-app
+    environment:
+      PORT: "8081"
+      JDBC_URL: jdbc:postgresql://postgres:5432/appdb
+      DB_USER: app
+      DB_PASSWORD: secret
+
+      # ---- OpenTelemetry（SDK auto-configure）----
+      OTEL_SERVICE_NAME: java-manual-sdk
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment.name=local
+
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+
+      # OTLP/HTTPでcollectorへ送る（HTTPの場合は /v1/traces をSDKが構築）
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  spring-app:
+    build: ./spring-app
+    environment:
+      MANUAL_APP_BASE_URL: http://manual-app:8081
+
+      # ---- OpenTelemetry Java Agent ----
+      OTEL_SERVICE_NAME: java-spring-agent
+      OTEL_RESOURCE_ATTRIBUTES: service.version=1.0.0,deployment.environment.name=local
+
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      manual-app:
+        condition: service_started
+
+volumes:
+  pgdata:
